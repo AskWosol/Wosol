@@ -8,11 +8,12 @@ jobs:
     timeout-minutes: 360  # 6 hour max (GitHub Free limit)
 
     steps:
-    - name: Download and extract Ngrok
-      run: |
-        Invoke-WebRequest "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-stable-windows-amd64.zip" -OutFile ngrok.zip
-        Expand-Archive ngrok.zip -DestinationPath .
-        Remove-Item ngrok.zip -Force
+   - name: Download and extract Ngrok
+  shell: pwsh
+  run: |
+    Invoke-WebRequest "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile ngrok.zip
+    Expand-Archive ngrok.zip -DestinationPath .\ngrok
+    Remove-Item ngrok.zip -Force
 
     - name: Authenticate Ngrok
       run: .\ngrok.exe authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
