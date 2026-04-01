@@ -1,6 +1,8 @@
 name: Windows RDP via Ngrok
 
-on: [push]
+on:
+  push:
+  workflow_dispatch:
 
 jobs:
   rdp-setup:
@@ -11,8 +13,36 @@ jobs:
       - name: Download and extract Ngrok
         shell: pwsh
         run: |
-          Invoke-WebRequest "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile ngrok.zip
-          Expand-Archive ngrok.zip -DestinationPath .\ngrok
+          $ProgressPreference = 'SilentlyContinue'
+          $urls = @(
+            "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
+          )
+
+          $downloaded = $false
+
+          foreach ($url in $urls) {
+            try {
+              Write-Output "Trying: $url"
+              Invoke-WebRequest -Uri $url -OutFile ngrok.zip -UseBasicParsing
+              if (Test-Path ngrok.zip) {
+                $size = (Get-Item ngrok.zip).Length
+                if ($size -gt 0) {
+                  $downloaded = $true
+                  break
+                }
+              }
+            } catch {
+              Write-Output "Download failed from: $url"
+              Write-Output $_.Exception.Message
+            }
+          }
+
+          if (-not $downloaded) {
+            Write-Output "::error::Failed to download ngrok"
+            exit 1
+          }
+
+          Expand-Archive ngrok.zip -DestinationPath .\ngrok -Force
           Remove-Item ngrok.zip -Force
 
       - name: Authenticate Ngrok
@@ -20,10 +50,9 @@ jobs:
         run: |
           $token = "${{ secrets.NGROK_AUTH_TOKEN }}"
           if ([string]::IsNullOrWhiteSpace($token)) {
-            Write-Error "NGROK_AUTH_TOKEN is empty! Add it in Settings → Secrets and variables → Actions"
+            Write-Error "NGROK_AUTH_TOKEN is empty"
             exit 1
           }
-          Write-Output "Token length: $($token.Length) characters"
           & ".\ngrok\ngrok.exe" authtoken $token
 
       - name: Enable Remote Desktop
@@ -31,7 +60,9 @@ jobs:
         run: |
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
-          New-NetFirewallRule -DisplayName "Allow RDP via Ngrok" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3389 -ErrorAction SilentlyContinue
+          if (-not (Get-NetFirewallRule -DisplayName "Allow RDP via Ngrok" -ErrorAction SilentlyContinue)) {
+            New-NetFirewallRule -DisplayName "Allow RDP via Ngrok" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3389
+          }
 
       - name: Create RDP User
         shell: pwsh
@@ -43,7 +74,7 @@ jobs:
       - name: Start Ngrok and display connection info
         shell: pwsh
         run: |
-          Start-Process -FilePath "$pwd\ngrok\ngrok.exe" -ArgumentList "tcp 3389" -NoNewWindow -RedirectStandardOutput ngrok.log
+          Start-Process -FilePath "$pwd\ngrok\ngrok.exe" -ArgumentList "tcp 3389 --log=stdout" -NoNewWindow -RedirectStandardOutput ngrok.log
 
           $timeout = 120
           $tunnelUrl = $null
@@ -56,35 +87,33 @@ jobs:
               $response = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -ErrorAction Stop
               if ($response.tunnels.Count -gt 0) {
                 $tunnelUrl = $response.tunnels[0].public_url -replace "tcp://", ""
-                break
               }
             } catch {
               $logContent = Get-Content ngrok.log -ErrorAction SilentlyContinue
-              if ($logContent) {
-                $match = $logContent | Select-String -Pattern "tcp://([a-zA-Z0-9\.\-]+:\d+)"
-                if ($match) {
-                  $tunnelUrl = $match.Matches.Groups[1].Value
-                  break
-                }
-              }
+              $tunnelUrl = $logContent |
+                Select-String -Pattern "tcp://([a-zA-Z0-9\.\-]+:\d+)" |
+                ForEach-Object { $_.Matches.Groups[1].Value } |
+                Select-Object -First 1
             }
           }
 
           if (-not $tunnelUrl) {
-            Write-Output "::error::Ngrok tunnel failed"
+            Write-Output "::error::Failed to establish Ngrok tunnel after 120 seconds"
             Get-Content ngrok.log -ErrorAction SilentlyContinue
             exit 1
           }
 
-          Write-Output "::notice::🎉 RDP Ready! Address: $tunnelUrl"
-          Write-Output "::notice::Username: Ham7Office"
-          Write-Output "::notice::Password: MyStrong123"
-          Write-Output "::notice::Open mstsc.exe → Connect to $tunnelUrl"
+          Write-Output "Address: $tunnelUrl"
+          Write-Output "Username: Ham7Office"
+          Write-Output "Password: MyStrong123"
 
-          while ($true) { Start-Sleep 300 }
+          while ($true) {
+            Start-Sleep -Seconds 300
+          }
 
-      - name: Cleanup
+      - name: Force cleanup
         if: always()
         shell: pwsh
         run: |
-          Stop-Process -Name ngrok* -Force -ErrorAction SilentlyContinue
+          Stop-Process -Name "ngrok" -Force -ErrorAction SilentlyContinue
+          Stop-Process -Name "rdp" -Force -ErrorAction SilentlyContinue
